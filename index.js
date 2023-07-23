@@ -1,6 +1,6 @@
 const os = require('os');
 const path = require('path');
-const config = require('./config.dev.json');
+const config = require('./config.json');
 const teams = require("./teams");
 
 const exePath = path.isAbsolute(config.teams.app) ? config.teams.app : path.join(os.homedir(), config.teams.app);
@@ -9,9 +9,6 @@ const exePath = path.isAbsolute(config.teams.app) ? config.teams.app : path.join
   teamsClient = await teams.connect(exePath, config.teams.debugPort);
 
   teamsClient.on(teams.events.NEW_MEETING, (meeting) => {
-    console.log("New meeting");
-    console.log(meeting);
-
     // Ignore the meeting if it wasn't created by a teacher.
     if (!config.teachers.some(teacher => meeting.startedBy == teacher))
       return;
@@ -45,6 +42,7 @@ const exePath = path.isAbsolute(config.teams.app) ? config.teams.app : path.join
     message += `<p style="font-size:x-large;"><a href="${meeting.joinUrl}">Join Here</a></p>`;
     message += '<hr>';
     message += `<em>This message was written by <a href="${config.repoUrl}">a bot</a></em>`;
-    teamsClient.sendMessage(config.groupChatChannel, message);
+
+    teamsClient.sendMessage(config.groupChatChannel, message).catch(console.error);
   });
 })();
