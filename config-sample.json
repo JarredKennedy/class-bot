@@ -1,0 +1,42 @@
+{
+    "teams": {
+        "app": "AppData\\Local\\Microsoft\\Teams\\current\\Teams.exe",
+        "debugPort": 8315
+    },
+
+    "groupChatChannel": "12:abcdef123456789@thread.v2",
+
+    "classes": [
+        {
+            "title": "Class A",
+            "channels": [
+                "12:abcdef123456789@thread.tacv2",
+                "12:123456789abcdef@thread.tacv2"
+            ],
+            "start": {
+                "day": 1,
+                "hour": 9,
+                "mins": 0
+            }
+        },
+        {
+            "title": "Class B",
+            "channels": [
+                "12:abcdef998877665544332211@thread.tacv2",
+                "12:998877665544332211abcdef@thread.tacv2"
+            ],
+            "start": {
+                "day": 3,
+                "hour": 13,
+                "mins": 30
+            }
+        }
+    ],
+
+    "teachers": [
+        "abc-def-123-456-789",
+        "123-456-789-abc-def"
+    ],
+
+    "repoUrl": "https://jarred.link/git/class-bot"
+}

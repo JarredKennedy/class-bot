@@ -14,7 +14,6 @@ const events = {
     joinUrl: string     URL to join the meeting
     startedBy: string   ID of the user who started the meeting
     channel: {
-      title: string   Title of the channel the meeting is in
       id: string      ID of the channel the meeting is in
     }
   }
@@ -27,7 +26,6 @@ const events = {
     id: string          ID of the meeting
     title: string       Title of the meeting
     channel: {
-      title: string   Title of the channel the meeting is in
       id: string      ID of the channel the meeting is in
     }
   }
@@ -110,28 +108,109 @@ class TeamsClient extends EventEmitter {
   targetWsUrl;
   socket;
 
+  _cache = {
+    meetings: {}
+  };
+
   constructor(targetWsUrl) {
+    super();
     this.targetWsUrl = targetWsUrl;
     this.connectSocket();
   }
 
+  processMessage(message) {
+    if (message.resourceType === 'NewMessage' && message.resource.messagetype === 'Event/Call') {
+      // Cache this new call to be processed when the meeting data comes through. The reason for caching it
+      // instead of just checking for the update is to ensure that the meeting is new and not just an update
+      // to a meeting started some time ago.
+      this._cache.meetings[message.resource.id] = (new Date(message.time)).getTime();
+    } else if (
+      message.resourceType === 'MessageUpdate'
+      && message.resource.messagetype === 'Event/Call'
+      && this._cache.meetings.hasOwnProperty(message.resource.id)
+    ) {
+      const timeAgo = Date.now() - this._cache.meetings[message.resource.id];
+      // If the meeting message was more than 1min ago, delete from the cache and stop processing.
+      if (timeAgo > 60 * 1000) {
+        delete this._cache.meetings[message.resource.id];
+        return;
+      }
+
+      // Check for the update that has the rest of the meeting data then emit the new meeting event.
+
+      if (!('meeting' in message.resource.properties))
+        return;
+
+      const meetingData = JSON.parse(message.resource.properties.meeting);
+
+      if (!('meetingJoinUrl' in meetingData))
+        return;
+
+      delete this._cache.meetings[message.resource.id];
+
+      const meeting = {
+        id: message.resource.skypeguid,
+        title: meetingData.meetingtitle,
+        joinUrl: meetingData.meetingJoinUrl,
+        startedBy: meetingData.organizerId,
+        channel: {
+          id: message.resource.to
+        }
+      };
+
+      // Cache this meeting so a MEETING_ENDED event can be generated later.
+      this._cache.meetings[meeting.id] = meeting;
+
+      this.emit(events.NEW_MEETING, meeting);
+    }
+  }
+
   // Connect to the target frame devtools server.
   connectSocket() {
-    this.socket = new WebSocket(targetWsUrl, {perMessageDeflate: false});
+    this.socket = new WebSocket(this.targetWsUrl, {perMessageDeflate: false});
 
-    this.socket.on('message', (data) => {
-      const msg = JSON.parse(data.toString());
+    this.socket.on('open', () => {
+      this.socket.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+  
+        if ('method' in msg && msg.method === 'Network.webSocketFrameReceived') {
+          try {
+            let colonMatches = 0, i = 0;
 
-      if ('method' in msg && msg.method === 'Network.webSocketFrameReceived') {
-        
-      }
+            while (colonMatches < 3 && i < msg.params.response.payloadData.length) {
+              if (msg.params.response.payloadData[i] === ':') {
+                colonMatches++;
+              }
+
+              i++;
+            }
+
+            const rawPayload = msg.params.response.payloadData.substring(i);
+
+            if (rawPayload[0] === "{") {
+              const payload = JSON.parse(rawPayload);
+
+              if (!('body' in payload))
+                return;
+
+              const body = JSON.parse(payload.body);
+              this.processMessage(body);
+            }
+          } catch (error) {
+            console.error(error);
+          }
+        }
+      });
+  
+      // Tell Teams to send network events to us.
+      this.socket.send(JSON.stringify({
+        id: 1,
+        method: 'Network.enable'
+      }));
     });
 
-    // Tell Teams to send network events to us.
-    this.socket.send(JSON.stringify({
-      id: 1,
-      method: 'Network.enable'
-    }));
+    // Reconnect the socket if it gets disconnected.
+    this.socket.on('close', this.connectSocket);
   }
 
 }
