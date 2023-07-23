@@ -175,6 +175,14 @@ class TeamsClient extends EventEmitter {
     }
   }
 
+  /**
+   * Send a message to a Teams channel (chat or team channel).
+   * 
+   * @param {string} channelId The ID of the channel to send the message to.
+   * @param {string} message The content of the message to send. Should be in HTML.
+   * 
+   * @returns {Promise}
+   */
   sendMessage(channelId, message) {
     const payload = {
       content: message,
@@ -272,7 +280,7 @@ class TeamsClient extends EventEmitter {
   }
 
   // Extract tokens from Teams. These can be used to send messages among other uses.
-  // This executs the code below in the Teams frame and will return the cached tokens from Teams.
+  // This executes the code below in the Teams frame and will return the cached tokens from Teams.
   _fetchTokens() {
     const send = (message) => this.socket.send(JSON.stringify(message));
 
@@ -312,7 +320,7 @@ class TeamsClient extends EventEmitter {
  * @param {string} exePath Path to the Teams executable.
  * @param {number} port    Port where devtools is served.
  * 
- * @return {Promise<TeamsClient>}
+ * @returns {Promise<TeamsClient>}
  */
 function connect(exePath, port) {
   // Start Teams with DevTools protocol enabled.

@@ -8,6 +8,7 @@ const exePath = path.isAbsolute(config.teams.app) ? config.teams.app : path.join
 (async () => {
   teamsClient = await teams.connect(exePath, config.teams.debugPort);
 
+  // When a teacher starts a class, post a message in chat with the meeting link.
   teamsClient.on(teams.events.NEW_MEETING, (meeting) => {
     // Ignore the meeting if it wasn't created by a teacher.
     if (!config.teachers.some(teacher => meeting.startedBy == teacher))
@@ -45,4 +46,5 @@ const exePath = path.isAbsolute(config.teams.app) ? config.teams.app : path.join
 
     teamsClient.sendMessage(config.groupChatChannel, message).catch(console.error);
   });
+
 })();
