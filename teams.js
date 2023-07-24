@@ -106,11 +106,14 @@ const reactions = {
 };
 
 class TeamsClient extends EventEmitter {
-  targetWsUrl;
-  socket;
+  _devtoolsWsUrl;
+  _socket;
+
+  _skypeAuth;
 
   _tokens = {
     skype: null,
+    skypeRefresh:  null,
     teams: null
   };
 
@@ -122,13 +125,87 @@ class TeamsClient extends EventEmitter {
   REQ_ID_GET_TEAMS_TOKEN = 2;
   REQ_ID_GET_SKYPE_TOKEN = 3;
 
-  constructor(targetWsUrl) {
+  constructor(devtoolsWsUrl) {
     super();
-    this.targetWsUrl = targetWsUrl;
-    this._connectSocket();
+    this._devtoolsWsUrl = devtoolsWsUrl;
+    this._connectSockets();
   }
 
-  processMessage(message) {
+  /**
+   * Send a message to a Teams channel (chat or team channel).
+   * 
+   * @param {string} channelId The ID of the channel to send the message to.
+   * @param {string} message The content of the message to send. Should be in HTML.
+   * 
+   * @returns {Promise}
+   */
+  sendMessage(channelId, message) {
+    const payload = {
+      content: message,
+      messagetype: "RichText/Html",
+      contenttype: "text",
+      amsreferences: [], // don't know what this is
+      clientmessageid: `1337${Date.now()}`, // this is an ID for the client, the server has its own IDs
+      imdisplayname: "Class Bot", // this seems to be ignored.
+      properties: {
+        importance: "", // you can specify 'high', and 'urgent'
+        subject: "" // I think this has something to do with quoting previous messages.
+      }
+    };
+
+    return this.skypeApiCall(`/users/ME/conversations/${channelId}/messages`, 'POST', payload);
+  }
+
+  /**
+   * Makes a call to the Skype API. This method automatically handles authentication. Returns
+   * a promise which will resolve with the request response if successful, otherwise it will
+   * reject with some error.
+   * 
+   * @returns {Promise<object>}
+   */
+  skypeApiCall(endpoint, method, data) {
+    if (this._skypeAuth)
+      return this._skypeAuth.then(() => this.skypeApiCall(endpoint, method, data));
+
+    const now = Date.now() / 1000;
+    this._skypeAuth = (this._tokens.skype && this._tokens.skype.token && now < (this._tokens.skype.expires - 60))
+      ? Promise.resolve()
+      : (
+          (this._tokens.skypeRefresh && this._tokens.skypeRefresh.token && now < (this._tokens.skypeRefresh.expires - 60))
+            ? Promise.resolve()
+            : this._fetchSkypeRefreshToken()
+        ).then(this._refreshSkypeToken.bind(this));
+
+    this._skypeAuth.finally(() => this._skypeAuth = undefined);
+
+    return this._skypeAuth
+      .then(() => {
+        const headers = {'Authentication': `skypetoken=${this._tokens.skype.token}`};
+    
+        if (data)
+          headers['Content-Type'] = 'application/json';
+
+        return simpleRequest(`https://apac.ng.msg.teams.microsoft.com/v1${endpoint}`, {method, headers, timeout: 4000}, data);
+      });
+  }
+
+  /**
+   * Makes a call to the Teams API. This method handles authentication automatically. Returns
+   * a promise which resolves with the response or rejects with an error message.
+   * 
+   * @returns {Promise<object>}
+   */
+  teamsApiCall(endpoint, method, data) {
+    // Stub
+  }
+
+  /**
+   * Handle a WebSocket message from the worker frame. This function examines the structure of the message
+   * to see if it is for an event we care about and emits an event if it is.
+   * 
+   * @param {object} message The message sent via the WebSocket.
+   */
+  _processMessage(message) {
     if (message.resourceType === 'NewMessage' && message.resource.messagetype === 'Event/Call') {
       // Cache this new call to be processed when the meeting data comes through. The reason for caching it
       // instead of just checking for the update is to ensure that the meeting is new and not just an update
@@ -175,142 +252,182 @@ class TeamsClient extends EventEmitter {
     }
   }
 
-  /**
-   * Send a message to a Teams channel (chat or team channel).
-   * 
-   * @param {string} channelId The ID of the channel to send the message to.
-   * @param {string} message The content of the message to send. Should be in HTML.
-   * 
-   * @returns {Promise}
-   */
-  sendMessage(channelId, message) {
-    const payload = {
-      content: message,
-      messagetype: "RichText/Html",
-      contenttype: "text",
-      amsreferences: [], // don't know what this is
-      clientmessageid: `1337${Date.now()}`, // this is an ID for the client, the server has its own IDs
-      imdisplayname: "Class Bot", // this seems to be ignored.
-      properties: {
-        importance: "", // you can specify 'high', and 'urgent'
-        subject: "" // I think this has something to do with quoting previous messages.
-      }
-    };
-
-    const url = `https://apac.ng.msg.teams.microsoft.com/v1/users/ME/conversations/${channelId}/messages`;
-    const data = JSON.stringify(payload);
-
-    return new Promise((resolve, reject) => {
-      const req = https.request(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': data.length,
-          'Authentication': `skypetoken=${this._tokens.skype}`
-        },
-        timeout: 4000
-      }, (res) => {
-        if (res.statusCode >= 300) {
-          return reject('sendMessage request failed.');
-        }
-
-        resolve();
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => reject('timed out'));
-      req.write(data);
-      req.end();
-    });
-  }
-
   // Connect to the target frame devtools server.
-  _connectSocket() {
-    this.socket = new WebSocket(this.targetWsUrl, {perMessageDeflate: false});
+  _connectSockets() {
+    const socket = new WebSocket(this._devtoolsWsUrl, {perMessageDeflate: false});
 
-    this.socket.on('open', () => {
-      this.socket.on('message', (data) => {
-        const msg = JSON.parse(data.toString());
-  
-        if ('id' in msg) {
-          if (msg.id === this.REQ_ID_GET_TEAMS_TOKEN || msg.id === this.REQ_ID_GET_SKYPE_TOKEN) {
-            this._processTokenResponse(msg.id, msg.result);
-          }
-        } else if ('method' in msg && msg.method === 'Network.webSocketFrameReceived') {
-          try {
-            let colonMatches = 0, i = 0;
+    socket.on('open', () => {
+      socket.on('message', this._handleSocketData.bind(this));
+      this._socket = socket;
 
-            while (colonMatches < 3 && i < msg.params.response.payloadData.length) {
-              if (msg.params.response.payloadData[i] === ':') {
-                colonMatches++;
-              }
-
-              i++;
-            }
-
-            const rawPayload = msg.params.response.payloadData.substring(i);
-
-            if (rawPayload[0] === "{") {
-              const payload = JSON.parse(rawPayload);
-
-              if (!('body' in payload))
-                return;
-
-              const body = JSON.parse(payload.body);
-              this.processMessage(body);
-            }
-          } catch (error) {
-            console.error(error);
-          }
-        }
-      });
-  
       // Tell Teams to send network events to us.
-      this.socket.send(JSON.stringify({
-        id: this.REQ_ID_ENABLE_NET,
-        method: 'Network.enable'
-      }));
-
-      // Give time for the frame to load before requesting tokens.
-      setTimeout(this._fetchTokens.bind(this), 10000);
-    });
-
-    // Reconnect the socket if it gets disconnected.
-    this.socket.on('close', this._connectSocket);
-  }
-
-  // Extract tokens from Teams. These can be used to send messages among other uses.
-  // This executes the code below in the Teams frame and will return the cached tokens from Teams.
-  _fetchTokens() {
-    const send = (message) => this.socket.send(JSON.stringify(message));
-
-    send({
-      id: this.REQ_ID_GET_TEAMS_TOKEN,
-      method: 'Runtime.evaluate',
-      params: {
-        expression: "workerServer._stateAndRequestHandlers.get('graphql').requestHandler.contextValue.discoverService.aad._authTokenCache._cache.get('https://chatsvcagg.teams.microsoft.com');",
-        returnByValue: true
-      }
-    });
-
-    send({
-      id: this.REQ_ID_GET_SKYPE_TOKEN,
-      method: 'Runtime.evaluate',
-      params: {
-        expression: "workerServer._stateAndRequestHandlers.get('graphql').requestHandler.contextValue.discoverService._skypeToken.value;",
-        returnByValue: true
-      }
+      socket.send(JSON.stringify({ id: this.REQ_ID_ENABLE_NET, method: 'Network.enable' }));
     });
   }
 
-  _processTokenResponse(messageId, tokenResponse) {
-    if (messageId === this.REQ_ID_GET_TEAMS_TOKEN) {
-      this._tokens.teams = tokenResponse.result.value.token;
-    } else {
-      this._tokens.skype = tokenResponse.result.value;
+  /**
+   * Handle a devtools message sent by a Teams frame.
+   * 
+   * @param {string} data The message the frame sent.
+   */
+  _handleSocketData(data) {
+    const msg = JSON.parse(data.toString());
+
+    if ('id' in msg) {
+      switch (msg.id) {
+        case this.REQ_ID_GET_SKYPE_TOKEN:
+          return this.emit('tokenupdate.skype', msg.result);
+        case this.REQ_ID_GET_TEAMS_TOKEN:
+          return this.emit('tokenupdate.teams', msg.result);
+      }
+    } else if ('method' in msg && msg.method === 'Network.webSocketFrameReceived') {
+      try {
+        // WebSocket messages from Teams have some weird formatting, this removes that to extract the JSON
+        // payload.
+        let colonMatches = 0, i = 0;
+        while (colonMatches < 3 && i < msg.params.response.payloadData.length) {
+          if (msg.params.response.payloadData[i] === ':')
+            colonMatches++;
+
+          i++;
+        }
+
+        const rawPayload = msg.params.response.payloadData.substring(i);
+
+        if (rawPayload[0] !== "{")
+          return;
+
+        const payload = JSON.parse(rawPayload);
+
+        if (!('body' in payload))
+          return;
+
+        // The message will be inspected and an event will potentially be emitted.
+        this._processMessage(JSON.parse(payload.body));
+      } catch (error) {
+        console.error(error);
+      }
     }
   }
 
+  /**
+   * Fetch the current refresh token from Teams. This executes a line of code in the shared worker which should return
+   * the Skype refresh token.
+   * 
+   * @returns {Promise}
+   */
+  _fetchSkypeRefreshToken() {
+    const fetchToken = new Promise((resolve, reject) => {
+      // Execute this JS code in Teams to extract the Skype refresh token.
+      this._socket.send(JSON.stringify({
+        id: this.REQ_ID_GET_SKYPE_TOKEN,
+        method: 'Runtime.evaluate',
+        params: {
+          expression: "workerServer._stateAndRequestHandlers.get('graphql').requestHandler.contextValue.discoverService.aad.acquireTokenV2('https://api.spaces.skype.com');",
+          returnByValue: true,
+          awaitPromise: true
+        }
+      }));
+
+      // There can only be one message-handler function for the WebSocket, so _handleSocketData will receive the result
+      // of the above code execution. _handleSocketData will then emit an event with the response of the execution which
+      // will provide the refresh token.
+      this.once('tokenupdate.skype', (response) => {
+        if (
+          typeof response === 'object'
+          && 'result' in response
+          && typeof response.result === 'object'
+          && 'value' in response.result
+          && typeof response.result.value === 'object'
+        ) {
+          // Update the refresh token.
+          this._tokens.skypeRefresh = {
+            token: response.result.value.token,
+            expires: response.result.value.expires
+          };
+          return resolve();
+        }
+
+        reject('fetch.response');
+      });
+    });
+    // Allow 5s for the response to be received after sending the execution request.
+    const timeout = new Promise((_, reject) => setTimeout(() => reject('fetch.timeout'), 5000));
+
+    return Promise.race([fetchToken, timeout]);
+  }
+
+  /**
+   * Make a request to the Teams API to generate a new Skype API token. Like all other token refresh/fetch functions, the
+   * method returns a Promise which indicates only the success or failure of the operation, the token data is stored on
+   * the instance.
+   * 
+   * @returns {Promise}
+   */
+  _refreshSkypeToken() {
+    return simpleRequest('https://teams.microsoft.com/api/authsvc/v1.0/authz', {
+      method: 'POST',
+      headers: {
+        'Content-Length': 0,
+        'Authorization': `Bearer ${this._tokens.skypeRefresh.token}`
+      },
+      timeout: 4000
+    }).then((response) => {
+      this._tokens.skype = {
+        token: response.tokens.skypeToken,
+        expires: parseInt(Date.now() / 1000) + response.tokens.expiresIn
+      };
+    });
+  }
+
+}
+
+/**
+ * Make a simple request to a URL.
+ */
+function simpleRequest(url, options, data) {
+  const protocol = url.startsWith('https') ? https : http;
+
+  return new Promise((resolve, reject) => {
+    let payload = '';
+    if (data) {
+      payload = (typeof data === 'string') ? data : JSON.stringify(data);
+      options.headers = Object.assign(options.headers ?? {}, {'Content-Length': payload.length});
+    }
+
+    const request = protocol.request(url, options, (response) => {
+      if (response.statusCode >= 300) {
+        if (response.statusCode == 401 || response.statusCode == 403)
+          return reject('unauthorized');
+
+        return reject('request_failed');
+      }
+
+      response.setEncoding('utf-8');
+
+      let raw = '';
+      response.on('data', (chunk) => {
+        raw += chunk;
+      });
+
+      response.on('end', () => {
+        if (response.headers['content-type'].indexOf('application/json') >= 0) {
+          return resolve(JSON.parse(raw));
+        }
+
+        resolve(raw);
+      });
+    });
+
+    request.on('error', reject);
+    request.on('timeout', () => reject('request_timed_out'));
+
+    if (data) {
+      request.write(payload);
+    }
+
+    request.end();
+  });
 }
 
 /**
@@ -341,34 +458,12 @@ function connect(exePath, port) {
     // Wait 5s to give Teams time to start, it's electron garbage after all.
     .then(() => new Promise((resolve) => setTimeout(resolve, 5000)))
     // Make a request to the devtools server requesting a list of debug targets.
-    .then(() => new Promise((resolve) => {
-      http.get(
-        `http://localhost:${port}/json/list`,
-        {
-          headers: {
-            'Accept': 'application/json'
-          },
-          timeout: 2000
-        },
-        (response) => {
-          response.setEncoding('utf-8');
-
-          let raw = '';
-          response.on('data', (chunk) => {
-            raw += chunk;
-          });
-
-          response.on('end', () => {
-            resolve(JSON.parse(raw));
-          });
-        }
-      );
+    .then(() => simpleRequest(`http://localhost:${port}/json/list`, {
+      headers: {'Accept': 'application/json'},
+      timeout: 2000
     }))
     .then((targets) => {
-      // Find the precompiled-shared-worker frame.
-      // This frame is useful because it creates the WebSocket connection which receives Teams events like
-      // new messages and new meetings. It is also possible to extract a useful token which can be used to
-      // get data from the Teams API (teams, channels, chats, messages).
+      // Find the precompiled shared worker frame.
       const target = targets.find((candidate) => candidate.type == 'shared_worker' && candidate.url.indexOf('precompiled') >= 0);
 
       if (!target)
