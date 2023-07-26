@@ -25,6 +25,7 @@ const events = {
   event, this is based on events that occur in the channel, not a specific call-ending event.
   {
     id: string          ID of the meeting
+    messageId: string   ID of the message announcing the meeting.
     participants: [
       {
         id: string      ID of the user who participated in the meeting
@@ -169,6 +170,33 @@ class TeamsClient extends EventEmitter {
   }
 
   /**
+   * Edit the content of a message.
+   * 
+   * @param {string} channelId The ID of the channel the message exists in.
+   * @param {string} messageId The Teams ID of the message to update.
+   * @param {string} clientMessageId The client-side ID of the message.
+   * @param {string} message The content of the message.
+   * 
+   * @returns {Promise}
+   */
+  editMessage(channelId, messageId, clientMessageId, message) {
+    const payload = {
+      content: message,
+      messagetype: "RichText/Html",
+      contenttype: "text",
+      amsreferences: [],
+      clientmessageid: clientMessageId,
+      imdisplayname: "Class Bot",
+      properties: {
+        importance: "",
+        subject: ""
+      }
+    };
+
+    return this.skypeApiCall(`/users/ME/conversations/${channelId}/messages/${messageId}`, 'PUT', payload);
+  }
+
+  /**
    * Makes a call to the Skype API. This method automatically handles authentication. Returns
    * a promise which will resolve with the request response if successful, otherwise it will
    * reject with some error.
@@ -239,8 +267,11 @@ class TeamsClient extends EventEmitter {
 
           const nameMatch = partStr.match(/<displayName>([^<]+)/);
           const name = nameMatch[1];
+
+          const durationMatch = partStr.match(/<duration>([^<]+)/);
+          const duration = parseInt(durationMatch[1]);
           
-          return { id, name };
+          return { id, name, duration };
         })
         .filter((participant) => !!participant);
 
@@ -285,6 +316,7 @@ class TeamsClient extends EventEmitter {
 
       const meeting = {
         id: message.resource.skypeguid,
+        messageId: message.resource.id,
         title: meetingData.meetingtitle,
         joinUrl: meetingData.meetingJoinUrl,
         startedBy: meetingData.organizerId,
@@ -463,7 +495,7 @@ function simpleRequest(url, options, data) {
     let payload = '';
     if (data) {
       payload = (typeof data === 'string') ? data : JSON.stringify(data);
-      options.headers = Object.assign(options.headers ?? {}, {'Content-Length': payload.length});
+      options.headers = Object.assign(options.headers ?? {}, {'Content-Length': Buffer.byteLength(payload)});
     }
 
     const request = protocol.request(url, options, (response) => {
@@ -482,7 +514,7 @@ function simpleRequest(url, options, data) {
       });
 
       response.on('end', () => {
-        if (response.headers['content-type'].indexOf('application/json') >= 0) {
+        if (response.headers['content-type'] && response.headers['content-type'].indexOf('application/json') >= 0) {
           return resolve(JSON.parse(raw));
         }
 

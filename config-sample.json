@@ -38,5 +38,7 @@
         "123-456-789-abc-def"
     ],
 
+    "courseStart": 1689429600,
+
     "repoUrl": "https://jarred.link/git/class-bot"
 }
