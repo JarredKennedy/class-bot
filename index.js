@@ -1,6 +1,6 @@
 const os = require('os');
 const path = require('path');
-const config = require('./config.dev.json');
+const config = require('./config.json');
 const teams = require("./teams");
 
 const exePath = path.isAbsolute(config.teams.app) ? config.teams.app : path.join(os.homedir(), config.teams.app);
