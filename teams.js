@@ -25,7 +25,12 @@ const events = {
   event, this is based on events that occur in the channel, not a specific call-ending event.
   {
     id: string          ID of the meeting
-    title: string       Title of the meeting
+    participants: [
+      {
+        id: string      ID of the user who participated in the meeting
+        name: string    Name of the user who participated in the meeting
+      }
+    ]
     channel: {
       id: string      ID of the channel the meeting is in
     }
@@ -207,10 +212,46 @@ class TeamsClient extends EventEmitter {
    */
   _processMessage(message) {
     if (message.resourceType === 'NewMessage' && message.resource.messagetype === 'Event/Call') {
-      // Cache this new call to be processed when the meeting data comes through. The reason for caching it
-      // instead of just checking for the update is to ensure that the meeting is new and not just an update
-      // to a meeting started some time ago.
-      this._cache.meetings[message.resource.id] = (new Date(message.time)).getTime();
+      if (message.resource.content.indexOf('<ended/>') >= 0) {
+        // This message indicates that a meeting has ended.
+        // Participants list is in XML. Use minimal regex to get the participant names and IDs from the markup.
+        const participants = [...message.resource.content.matchAll(/<part [^>]*>/g)].reduce((ranges, match) => {
+          if (ranges.length)
+            ranges[ranges.length-1].push(match.index);
+
+          ranges.push([match.index]);
+          return ranges;
+        }, [])
+        .map((range) => {
+          const partStr = message.resource.content.substring.apply(message.resource.content, range);
+          const idMatch = partStr.match(/identity="([^"]+)/);
+          const id = idMatch[1];
+
+          if (id.startsWith('28'))
+            return null;
+
+          const nameMatch = partStr.match(/<displayName>([^<]+)/);
+          const name = nameMatch[1];
+          
+          return { id, name };
+        })
+        .filter((participant) => !!participant);
+
+        const meeting = {
+          id: message.resource.skypeguid,
+          participants,
+          channel: {
+            id: message.resource.to
+          }
+        };
+
+        this.emit(events.MEETING_ENDED, meeting);
+      } else {
+        // Cache this new call to be processed when the meeting data comes through. The reason for caching it
+        // instead of just checking for the update is to ensure that the meeting is new and not just an update
+        // to a meeting started some time ago.
+        this._cache.meetings[message.resource.id] = (new Date(message.time)).getTime();
+      }
     } else if (
       message.resourceType === 'MessageUpdate'
       && message.resource.messagetype === 'Event/Call'
@@ -284,6 +325,11 @@ class TeamsClient extends EventEmitter {
       try {
         // WebSocket messages from Teams have some weird formatting, this removes that to extract the JSON
         // payload.
+
+        // Messages we care about start with 3.
+        if (msg.params.response.payloadData[0] != '3')
+          return;
+
         let colonMatches = 0, i = 0;
         while (colonMatches < 3 && i < msg.params.response.payloadData.length) {
           if (msg.params.response.payloadData[i] === ':')
