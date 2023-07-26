@@ -40,8 +40,9 @@ const events = {
   /*
   Triggered when a new message is received in a channel. Chats are also considered channels.
   {
-    id: string          ID of the message
-    content: string     Conent of the message. This is typically in HTML
+    id: string                ID of the message
+    clientMessageId: string   Client-side ID of the message.
+    content: string           Conent of the message. This is typically in HTML
     user: {
       name: string    Name of the user who sent the message
       id: string      ID of the user who sent the message
@@ -146,12 +147,14 @@ class TeamsClient extends EventEmitter {
    * @returns {Promise}
    */
   sendMessage(channelId, message) {
+    const clientMessageId = `1337${Date.now()}`;
+
     const payload = {
       content: message,
       messagetype: "RichText/Html",
       contenttype: "text",
       amsreferences: [], // don't know what this is
-      clientmessageid: `1337${Date.now()}`, // this is an ID for the client, the server has its own IDs
+      clientmessageid: clientMessageId, // this is an ID for the client, the server has its own IDs
       imdisplayname: "Class Bot", // this seems to be ignored.
       properties: {
         importance: "", // you can specify 'high', and 'urgent'
@@ -159,7 +162,10 @@ class TeamsClient extends EventEmitter {
       }
     };
 
-    return this.skypeApiCall(`/users/ME/conversations/${channelId}/messages`, 'POST', payload);
+    return this.skypeApiCall(`/users/ME/conversations/${channelId}/messages`, 'POST', payload)
+      .then((data) => {
+        return {data, clientMessageId};
+      });
   }
 
   /**
@@ -295,6 +301,7 @@ class TeamsClient extends EventEmitter {
       // Handle a new chat or conversation message event.
       const threadMessage = {
         id: message.resource.id,
+        clientMessageId: message.resource.clientmessageid,
         content: message.resource.content,
         user: {
           id: message.resource.from.substring(message.resource.from.lastIndexOf('/') + 1),
