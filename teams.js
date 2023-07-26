@@ -48,7 +48,8 @@ const events = {
     }
     channel: {
       id: string      ID of the channel the message was sent in
-      type: string    Either 'chat' or 'topic'. A topic is a conversation in a team channel
+      name: string    Name of the channel. Will be undefined if the chat channel has no name.
+      type: string    Either 'chat' or 'topic'
     }
   }
   */
@@ -290,6 +291,23 @@ class TeamsClient extends EventEmitter {
       this._cache.meetings[meeting.id] = meeting;
 
       this.emit(events.NEW_MEETING, meeting);
+    } else if (message.resourceType === 'NewMessage' && ['text', 'richtext/html'].indexOf(message.resource.messagetype.toLowerCase()) >= 0) {
+      // Handle a new chat or conversation message event.
+      const threadMessage = {
+        id: message.resource.id,
+        content: message.resource.content,
+        user: {
+          id: message.resource.from.substring(message.resource.from.lastIndexOf('/') + 1),
+          name: message.resource.imdisplayname
+        },
+        channel: {
+          id: message.resource.to,
+          name: message.resource.threadtopic,
+          type: message.resource.threadtype
+        }
+      };
+
+      this.emit(events.NEW_MESSAGE, threadMessage);
     }
   }
 
