@@ -266,9 +266,15 @@ class TeamsClient extends EventEmitter {
             return null;
 
           const nameMatch = partStr.match(/<displayName>([^<]+)/);
+          if (!nameMatch)
+            return null;
+
           const name = nameMatch[1];
 
           const durationMatch = partStr.match(/<duration>([^<]+)/);
+          if (!durationMatch)
+            return null;
+
           const duration = parseInt(durationMatch[1]);
           
           return { id, name, duration };
